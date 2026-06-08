@@ -48,6 +48,9 @@ function classifyMessage(text) {
 async function handleEvent(event) {
   if (event.type !== 'message') return;
   const { replyToken, message } = event;
+  // 儲存 LINE user ID（第一次自動存）
+  const lineUserId = event.source?.userId;
+  if (lineUserId) saveLineUserId(lineUserId).catch(()=>{});
 
   if (message.type === 'text') {
     await handleText(message.text.trim(), replyToken);
@@ -238,17 +241,17 @@ async function geminiRequest(parts) {
     { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contents: [{ parts }] }) }
   );
-  if (res.status === 429) {
-    await sleep(4000);
+  if (res.status === 429 || res.status === 503) {
+    await sleep(5000);
     const retry = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`,
       { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contents: [{ parts }] }) }
     );
-    if (!retry.ok) throw new Error(`Gemini ${retry.status}`);
+    if (!retry.ok) throw new Error(`Gemini ${retry.status}，請稍後再試一次`);
     return retry.json();
   }
-  if (!res.ok) throw new Error(`Gemini ${res.status}`);
+  if (!res.ok) throw new Error(`Gemini ${res.status}，請稍後再試一次`);
   return res.json();
 }
 
@@ -361,4 +364,19 @@ function todayTW() {
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
+}
+
+async function saveLineUserId(userId) {
+  const ctx = await fbRead('bot_context').catch(()=>({})) || {};
+  if (ctx.line_user_id) return;
+  ctx.line_user_id = userId;
+  await fbPut('bot_context', ctx).catch(()=>{});
+}
+
+async function pushMessage(to, text) {
+  await fetch('https://api.line.me/v2/bot/message/push', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${LINE_TOKEN}` },
+    body: JSON.stringify({ to, messages: [{ type: 'text', text }] })
+  });
 }
