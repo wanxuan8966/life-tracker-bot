@@ -90,7 +90,12 @@ async function geminiParse(text) {
 只回傳純JSON（不要markdown）：
 {"date":"YYYY-MM-DD","sleep":{"found":false,"sleepTime":null,"wakeTime":null,"hours":null,"note":""},"diet":{"found":false,"calMin":null,"calMax":null,"prot":null,"water":null,"details":"","note":""},"exercise":{"found":false,"type":"休息","intensity":"無","details":"","note":""}}
 
-規則：24小時制；凌晨1點=01:00；昨天/前天請推算日期；沒有的資料一律found:false`;
+【重要規則】
+- 時間：24小時制；凌晨1點=01:00；昨天/前天請推算日期；沒有的資料一律found:false
+- diet.details：把每一樣食物/飲料都單獨列一行，格式為「餐次: 食物名稱 熱量kcal 蛋白質Xg」，不可省略，越詳細越好
+- diet.note：整天飲食的補充備註（例如蛋白達標、熱量偏高等）
+- exercise.details：把每個動作單獨列一行，包含重量和組數次數
+- sleep.note：睡眠狀態備註（例如分段睡、作息延後等）`;
 
   const res = await geminiRequest([{ text: prompt }]);
   const raw = res.candidates?.[0]?.content?.parts?.[0]?.text || '';
