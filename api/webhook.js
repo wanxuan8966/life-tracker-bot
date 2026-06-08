@@ -37,6 +37,13 @@ export default async function handler(req, res) {
   res.status(200).send('OK');
 }
 
+// ── 訊息分類 ────────────────────────────────────────────────────────────────
+function classifyMessage(text) {
+  if (/菜單|訓練菜單|今天練什麼|幫我排|居家訓練|健身房訓練|今天訓練|練習計畫|排個菜單/.test(text)) return 'menu';
+  if (/可以嗎|行嗎|加重|增加重量|減重量|換動作|這樣好嗎|多少組|多少下|可以加|要不要加|太輕|太重|感覺/.test(text)) return 'followup';
+  return 'record';
+}
+
 // ── Event handler ───────────────────────────────────────────────────────────
 async function handleEvent(event) {
   if (event.type !== 'message') return;
@@ -52,12 +59,110 @@ async function handleEvent(event) {
 // ── Text message ────────────────────────────────────────────────────────────
 async function handleText(text, replyToken) {
   try {
-    const parsed = await geminiParse(text);
-    const summary = await writeToFirebase(parsed);
-    await reply(replyToken, summary);
+    const type = classifyMessage(text);
+    if (type === 'menu') {
+      await handleMenuRequest(text, replyToken);
+    } else if (type === 'followup') {
+      await handleFollowup(text, replyToken);
+    } else {
+      const parsed = await geminiParse(text);
+      const summary = await writeToFirebase(parsed);
+      await reply(replyToken, summary);
+    }
   } catch (e) {
-    await reply(replyToken, `❌ 解析失敗：${e.message}`);
+    await reply(replyToken, `❌ ${e.message}`);
   }
+}
+
+// ── 訓練菜單生成 ─────────────────────────────────────────────────────────────
+async function handleMenuRequest(text, replyToken) {
+  const isHome = /居家|在家/.test(text);
+  const isGym = /健身房|gym/i.test(text) || !isHome;
+  const location = isHome ? '居家' : '健身房';
+
+  // 讀近期資料
+  const [exDb, sleepDb, dietDb] = await Promise.all([
+    fbRead('exercise'), fbRead('sleep'), fbRead('diet')
+  ]);
+  const trainDb = await fbRead('train');
+
+  const exRecords = (exDb?.records || []).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,14);
+  const trainRecords = (trainDb?.records || []).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,30);
+  const sleepRecords = (sleepDb?.records || []).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,3);
+  const dietRecords = (dietDb?.records || []).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,2);
+
+  const today = todayTW();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate()-1);
+  const yd = yesterday.toISOString().split('T')[0];
+
+  const todaySleep = sleepRecords.find(r=>r.date===today) || sleepRecords[0];
+  const ydDiet = dietRecords.find(r=>r.date===yd) || dietRecords[0];
+
+  const prompt = `你是一位專業健身教練，幫助這位用戶規劃今天的${location}訓練菜單。
+
+【用戶背景】
+- 女性，身高157cm，體重約48-49kg，目標：練出腰線/臀腿線條，改善圓肩駝背
+- 主要訓練動作：坐姿划船、滑輪下拉、引體向上（輔助）、壺鈴硬舉、坐姿髖外展、坐姿內夾、臀推、高腳杯深蹲、保加利亞分腿蹲
+- 居家可用器材：1.5kg啞鈴（輕）、瑜伽墊
+
+【近期訓練紀錄（最近14天）】
+${exRecords.map(r=>`${r.date}：${r.type}（${r.int}）- ${r.details||r.note||''}`).join('\n')}
+
+【近期動作重量紀錄】
+${trainRecords.map(r=>`${r.date} ${r.exercise} ${r.weight}kg ${r.sets}組×${r.reps}下${r.note?` (${r.note})`:''}`).join('\n')}
+
+【今天狀態】
+- 睡眠：${todaySleep?`${todaySleep.h}小時（${todaySleep.note||''}）`:'未記錄'}
+- 昨天飲食：${ydDiet?`熱量${(ydDiet.cMin+ydDiet.cMax)/2|0}kcal，蛋白質${ydDiet.prot||'未知'}g`:'未記錄'}
+
+【用戶請求】${text}
+
+請給出：
+1. 今天是否適合高強度訓練（根據睡眠/恢復判斷）
+2. 今天的${location}訓練菜單（4-6個動作，每個動作給明確重量/組數/次數）
+3. 重量建議要比上次稍微進步（但如果睡眠不足就維持或稍降）
+4. 簡短說明為什麼這樣排
+
+格式要簡潔，用中文，每個動作一行。`;
+
+  const res = await geminiRequest([{text: prompt}]);
+  const menuText = res.candidates?.[0]?.content?.parts?.[0]?.text || '無法生成菜單';
+
+  // 儲存對話上下文
+  await fbPut('bot_context', {
+    last_menu: menuText,
+    last_menu_location: location,
+    last_menu_ts: Date.now(),
+    last_train_records: JSON.stringify(trainRecords.slice(0,10))
+  });
+
+  await reply(replyToken, menuText);
+}
+
+// ── 後續追問 ─────────────────────────────────────────────────────────────────
+async function handleFollowup(text, replyToken) {
+  const ctx = await fbRead('bot_context');
+  if (!ctx || !ctx.last_menu || (Date.now()-ctx.last_menu_ts)>3600000) {
+    await reply(replyToken, '請先說「幫我排今天的健身房訓練菜單」或「居家訓練菜單」，我再根據你的問題回答。');
+    return;
+  }
+
+  const prompt = `你是健身教練，根據以下對話回答用戶的問題。
+
+【你剛才給的訓練菜單】
+${ctx.last_menu}
+
+【近期動作重量紀錄】
+${ctx.last_train_records ? JSON.parse(ctx.last_train_records).map(r=>`${r.date} ${r.exercise} ${r.weight}kg ${r.sets}組×${r.reps}下`).join('\n') : '無'}
+
+【用戶問題】${text}
+
+請直接、簡潔地回答，給出明確的建議（是/否 + 理由 + 具體建議值）。用繁體中文。`;
+
+  const res = await geminiRequest([{text: prompt}]);
+  const answer = res.candidates?.[0]?.content?.parts?.[0]?.text || '無法回答';
+  await reply(replyToken, answer);
 }
 
 // ── Image message（拍營養標示）───────────────────────────────────────────────
