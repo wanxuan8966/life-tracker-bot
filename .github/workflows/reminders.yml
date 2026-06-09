@@ -5,8 +5,8 @@ on:
     - cron: '0 1 * * 1-5'    # 平日 09:00 TWN（UTC 01:00）問睡眠
     - cron: '30 1 * * 1-5'   # 平日 09:30 TWN（UTC 01:30）問早餐
     - cron: '30 4 * * 1-5'   # 平日 12:30 TWN（UTC 04:30）問午餐
-    - cron: '30 13 * * 1-5'  # 平日 21:30 TWN（UTC 13:30）晚間總結
-    - cron: '0 13 * * 0,6'   # 假日 21:00 TWN（UTC 13:00）晚間總結
+    - cron: '30 13 * * 1-5'  # 平日 21:30 TWN（UTC 13:30）晚間總結（非假日才送）
+    - cron: '0 13 * * *'     # 每天 21:00 TWN（UTC 13:00）晚間總結（假日/週末才送）
   workflow_dispatch:
     inputs:
       type:
@@ -23,19 +23,32 @@ jobs:
           SCHEDULE="${{ github.event.schedule }}"
           INPUT_TYPE="${{ github.event.inputs.type }}"
 
+          # 查台灣行事曆判斷今天是否為假日（週末 or 國定假日）
+          TODAY=$(TZ='Asia/Taipei' date +%Y%m%d)
+          YEAR=$(TZ='Asia/Taipei' date +%Y)
+          CALENDAR=$(curl -sf "https://cdn.jsdelivr.net/gh/ruyut/TaiwanCalendar/data/${YEAR}.json" || echo "[]")
+          IS_HOLIDAY=$(echo "$CALENDAR" | jq -r --arg d "$TODAY" 'map(select(.date == $d)) | if length > 0 then .[0].isHoliday | tostring else "false" end')
+          echo "Today: $TODAY, isHoliday: $IS_HOLIDAY"
+
           if [ -n "$INPUT_TYPE" ]; then
             TYPE="$INPUT_TYPE"
           elif [ "$SCHEDULE" = "0 0 * * 1-5" ]; then
+            [ "$IS_HOLIDAY" = "true" ] && echo "Holiday, skipping weight" && exit 0
             TYPE="weight"
           elif [ "$SCHEDULE" = "0 1 * * 1-5" ]; then
+            [ "$IS_HOLIDAY" = "true" ] && echo "Holiday, skipping sleep_check" && exit 0
             TYPE="sleep_check"
           elif [ "$SCHEDULE" = "30 1 * * 1-5" ]; then
+            [ "$IS_HOLIDAY" = "true" ] && echo "Holiday, skipping breakfast" && exit 0
             TYPE="breakfast"
           elif [ "$SCHEDULE" = "30 4 * * 1-5" ]; then
+            [ "$IS_HOLIDAY" = "true" ] && echo "Holiday, skipping lunch" && exit 0
             TYPE="lunch"
           elif [ "$SCHEDULE" = "30 13 * * 1-5" ]; then
+            [ "$IS_HOLIDAY" = "true" ] && echo "Holiday, skipping weekday evening" && exit 0
             TYPE="evening"
-          elif [ "$SCHEDULE" = "0 13 * * 0,6" ]; then
+          elif [ "$SCHEDULE" = "0 13 * * *" ]; then
+            [ "$IS_HOLIDAY" != "true" ] && echo "Workday, skipping holiday evening" && exit 0
             TYPE="evening"
           else
             echo "Unknown schedule, skipping"
