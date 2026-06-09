@@ -48,23 +48,22 @@ function classifyMessage(text) {
 async function handleEvent(event) {
   if (event.type !== 'message') return;
   const { replyToken, message } = event;
-  // 儲存 LINE user ID（第一次自動存）
   const lineUserId = event.source?.userId;
   if (lineUserId) saveLineUserId(lineUserId).catch(()=>{});
 
   if (message.type === 'text') {
-    await handleText(message.text.trim(), replyToken);
+    await handleText(message.text.trim(), replyToken, lineUserId);
   } else if (message.type === 'image') {
     await handleImage(message.id, replyToken);
   }
 }
 
 // ── Text message ────────────────────────────────────────────────────────────
-async function handleText(text, replyToken) {
+async function handleText(text, replyToken, lineUserId) {
   try {
     const type = classifyMessage(text);
     if (type === 'menu') {
-      await handleMenuRequest(text, replyToken);
+      await handleMenuRequest(text, replyToken, lineUserId);
     } else if (type === 'followup') {
       await handleFollowup(text, replyToken);
     } else {
@@ -78,16 +77,17 @@ async function handleText(text, replyToken) {
 }
 
 // ── 訓練菜單生成 ─────────────────────────────────────────────────────────────
-async function handleMenuRequest(text, replyToken) {
+async function handleMenuRequest(text, replyToken, lineUserId) {
   const isHome = /居家|在家/.test(text);
-  const isGym = /健身房|gym/i.test(text) || !isHome;
   const location = isHome ? '居家' : '健身房';
 
-  // 讀近期資料
-  const [exDb, sleepDb, dietDb] = await Promise.all([
-    fbRead('exercise'), fbRead('sleep'), fbRead('diet')
+  // 立刻回覆佔用 reply token，避免 LINE 30 秒逾時
+  await reply(replyToken, `🏋 幫你分析近期訓練紀錄，稍等一下...`);
+
+  // 所有 Firebase 讀取同時進行
+  const [exDb, sleepDb, dietDb, trainDb] = await Promise.all([
+    fbRead('exercise'), fbRead('sleep'), fbRead('diet'), fbRead('train')
   ]);
-  const trainDb = await fbRead('train');
 
   const exRecords = (exDb?.records || []).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,14);
   const trainRecords = (trainDb?.records || []).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,30);
@@ -152,10 +152,12 @@ ${trainRecords.map(r=>`${r.date} ${r.exercise} ${r.weight}kg ${r.sets}組×${r.r
     last_menu: menuText,
     last_menu_location: location,
     last_menu_ts: Date.now(),
+    line_user_id: lineUserId,
     last_train_records: JSON.stringify(trainRecords.slice(0,10))
   });
 
-  await reply(replyToken, menuText);
+  // 用 push message 傳菜單（reply token 已用掉）
+  await pushMessage(lineUserId, menuText);
 }
 
 // ── 後續追問 ─────────────────────────────────────────────────────────────────
@@ -235,7 +237,7 @@ async function geminiAnalyzeImage(imgBuf) {
   return res.candidates?.[0]?.content?.parts?.[0]?.text || '無法解析圖片';
 }
 
-async function geminiRequest(parts, model = 'gemini-2.5-flash') {
+async function geminiRequest(parts, model = 'gemini-2.0-flash') {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`;
   const opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts }] }) };
   let lastStatus;
@@ -249,9 +251,9 @@ async function geminiRequest(parts, model = 'gemini-2.5-flash') {
     }
     break;
   }
-  // 2.5-flash 過載時自動改用 2.0-flash
-  if (model === 'gemini-2.5-flash' && lastStatus === 503) {
-    return geminiRequest(parts, 'gemini-2.0-flash');
+  // 2.0-flash 過載時自動改用 1.5-flash
+  if (model === 'gemini-2.0-flash' && lastStatus === 503) {
+    return geminiRequest(parts, 'gemini-1.5-flash');
   }
   throw new Error(`Gemini ${lastStatus}，請稍後再試一次`);
 }
