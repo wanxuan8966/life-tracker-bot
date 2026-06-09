@@ -2,9 +2,11 @@ name: LINE Bot Daily Reminders
 on:
   schedule:
     - cron: '0 0 * * 1-5'    # 平日 08:00 TWN（UTC 00:00）量體重
+    - cron: '0 1 * * 1-5'    # 平日 09:00 TWN（UTC 01:00）問睡眠
     - cron: '30 1 * * 1-5'   # 平日 09:30 TWN（UTC 01:30）問早餐
     - cron: '30 4 * * 1-5'   # 平日 12:30 TWN（UTC 04:30）問午餐
     - cron: '30 13 * * 1-5'  # 平日 21:30 TWN（UTC 13:30）晚間總結
+    - cron: '0 13 * * 0,6'   # 假日 21:00 TWN（UTC 13:00）晚間總結
   workflow_dispatch:
     inputs:
       type:
@@ -25,11 +27,15 @@ jobs:
             TYPE="$INPUT_TYPE"
           elif [ "$SCHEDULE" = "0 0 * * 1-5" ]; then
             TYPE="weight"
+          elif [ "$SCHEDULE" = "0 1 * * 1-5" ]; then
+            TYPE="sleep_check"
           elif [ "$SCHEDULE" = "30 1 * * 1-5" ]; then
             TYPE="breakfast"
           elif [ "$SCHEDULE" = "30 4 * * 1-5" ]; then
             TYPE="lunch"
           elif [ "$SCHEDULE" = "30 13 * * 1-5" ]; then
+            TYPE="evening"
+          elif [ "$SCHEDULE" = "0 13 * * 0,6" ]; then
             TYPE="evening"
           else
             echo "Unknown schedule, skipping"
