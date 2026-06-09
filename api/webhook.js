@@ -236,23 +236,21 @@ async function geminiAnalyzeImage(imgBuf) {
 }
 
 async function geminiRequest(parts) {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts }] }) }
-  );
-  if (res.status === 429 || res.status === 503) {
-    await sleep(5000);
-    const retry = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts }] }) }
-    );
-    if (!retry.ok) throw new Error(`Gemini ${retry.status}，請稍後再試一次`);
-    return retry.json();
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`;
+  const opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts }] }) };
+  const delays = [3000, 6000, 10000];
+  let lastStatus;
+  for (let i = 0; i <= delays.length; i++) {
+    const res = await fetch(url, opts);
+    if (res.ok) return res.json();
+    lastStatus = res.status;
+    if ((res.status === 503 || res.status === 429) && i < delays.length) {
+      await sleep(delays[i]);
+      continue;
+    }
+    break;
   }
-  if (!res.ok) throw new Error(`Gemini ${res.status}，請稍後再試一次`);
-  return res.json();
+  throw new Error(`Gemini ${lastStatus}，請稍後再試一次`);
 }
 
 // ── Firebase REST ────────────────────────────────────────────────────────────
