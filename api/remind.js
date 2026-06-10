@@ -1,4 +1,4 @@
-// Scheduled reminder endpoint — called by GitHub Actions cron
+// Scheduled reminder endpoint — called by cron-job.org
 const LINE_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 const FB_URL     = process.env.FIREBASE_DATABASE_URL;
 const FB_SECRET  = process.env.FIREBASE_DB_SECRET;
@@ -25,6 +25,21 @@ async function pushMessage(to, text) {
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${LINE_TOKEN}` },
     body: JSON.stringify({ to, messages: [{ type: 'text', text }] })
   });
+}
+
+// 查台灣行事曆，回傳今天是否為假日（週末或國定假日）
+async function isTaiwanHoliday() {
+  try {
+    const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Taipei' }).replace(/-/g, '');
+    const year = today.slice(0, 4);
+    const res = await fetch(`https://cdn.jsdelivr.net/gh/ruyut/TaiwanCalendar/data/${year}.json`);
+    if (!res.ok) return false;
+    const data = await res.json();
+    const entry = data.find(d => d.date === today);
+    return entry ? entry.isHoliday : false;
+  } catch {
+    return false;
+  }
 }
 
 const MESSAGES = {
@@ -69,10 +84,19 @@ export default async function handler(req, res) {
   if (req.query.secret !== R_SECRET) return res.status(403).send('Forbidden');
 
   const type = req.query.type;
+  // mode=workday：上班日才送（假日跳過）
+  // mode=holiday：假日/週末才送（上班日跳過）
+  const mode = req.query.mode || 'workday';
+
   const text = MESSAGES[type];
   if (!text) return res.status(400).send(`Unknown type: ${type}`);
 
-  // 取 LINE user ID（從 bot_context 存的）
+  // 假日判斷
+  const holiday = await isTaiwanHoliday();
+  if (mode === 'workday' && holiday) return res.status(200).send('Holiday, skipped');
+  if (mode === 'holiday' && !holiday) return res.status(200).send('Workday, skipped');
+
+  // 取 LINE user ID
   const ctx = await fbRead('bot_context');
   const lineUserId = ctx?.line_user_id;
   if (!lineUserId) return res.status(400).send('No LINE user ID stored yet. Send a message to the bot first.');
