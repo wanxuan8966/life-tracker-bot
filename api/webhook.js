@@ -239,25 +239,25 @@ async function geminiAnalyzeImage(imgBuf) {
   return res.candidates?.[0]?.content?.parts?.[0]?.text || '無法解析圖片';
 }
 
-async function geminiRequest(parts, model = 'gemini-2.0-flash') {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`;
+async function geminiRequest(parts) {
+  const models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.5-flash'];
   const opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts }] }) };
-  let lastStatus;
-  for (let i = 0; i < 3; i++) {
-    const res = await fetch(url, opts);
-    if (res.ok) return res.json();
-    lastStatus = res.status;
-    if ((res.status === 503 || res.status === 429) && i < 2) {
-      await sleep(2000 * (i + 1)); // 2s, 4s
-      continue;
+  let lastErr = '';
+  for (const model of models) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`;
+    // 每個 model 最多試 2 次
+    for (let i = 0; i < 2; i++) {
+      const res = await fetch(url, opts);
+      if (res.ok) return res.json();
+      lastErr = `${model} ${res.status}`;
+      if ((res.status === 503 || res.status === 429) && i === 0) {
+        await sleep(2000);
+        continue;
+      }
+      break; // 非 503/429，或已重試一次，換下一個 model
     }
-    break;
   }
-  // 2.0-flash 過載時自動改用 1.5-flash
-  if (model === 'gemini-2.0-flash' && lastStatus === 503) {
-    return geminiRequest(parts, 'gemini-1.5-flash');
-  }
-  throw new Error(`Gemini ${lastStatus}，請稍後再試一次`);
+  throw new Error(`AI 暫時忙碌（${lastErr}），請稍後再試`);
 }
 
 // ── Firebase REST ────────────────────────────────────────────────────────────
